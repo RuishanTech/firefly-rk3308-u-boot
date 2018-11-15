@@ -46,6 +46,7 @@ ifdef CONFIG_POST
 obj-$(CONFIG_CMD_DIAG) += diag.o
 endif
 obj-$(CONFIG_CMD_DISPLAY) += display.o
+obj-$(CONFIG_CMD_DTIMG) += dtimg.o
 obj-$(CONFIG_CMD_ECHO) += echo.o
 obj-$(CONFIG_ENV_IS_IN_EEPROM) += eeprom.o
 obj-$(CONFIG_CMD_EEPROM) += eeprom.o
@@ -85,6 +86,7 @@ obj-$(CONFIG_CMD_LOG) += log.o
 obj-$(CONFIG_ID_EEPROM) += mac.o
 obj-$(CONFIG_CMD_MD5SUM) += md5sum.o
 obj-$(CONFIG_CMD_MEMORY) += mem.o
+obj-$(CONFIG_CMD_MEMTESTER) += memtester/
 obj-$(CONFIG_CMD_IO) += io.o
 obj-$(CONFIG_CMD_MFSL) += mfsl.o
 obj-$(CONFIG_CMD_MII) += mii.o

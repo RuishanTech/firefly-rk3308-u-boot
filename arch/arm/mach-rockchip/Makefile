@@ -47,6 +47,7 @@ obj-$(CONFIG_ROCKCHIP_RK3308) += rk3308/
 obj-$(CONFIG_ROCKCHIP_RK3328) += rk3328/
 obj-$(CONFIG_ROCKCHIP_RK3368) += rk3368/
 obj-$(CONFIG_ROCKCHIP_RK3399) += rk3399/
+obj-$(CONFIG_ROCKCHIP_RK1808) += rk1808/
 obj-$(CONFIG_ROCKCHIP_RV1108) += rv1108/
 
 # Clear out SPL objects, in case this is a TPL build
@@ -55,3 +56,5 @@ obj-spl-$(CONFIG_TPL_BUILD) =
 # Now add SPL/TPL objects back into the main build
 obj-$(CONFIG_SPL_BUILD) += $(obj-spl-y)
 obj-$(CONFIG_TPL_BUILD) += $(obj-tpl-y)
+
+obj-$(CONFIG_ROCKCHIP_PRELOADER_ATAGS) += rk_atags.o

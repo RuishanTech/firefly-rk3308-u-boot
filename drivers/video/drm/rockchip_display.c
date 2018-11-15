@@ -11,6 +11,7 @@
 #include <libfdt.h>
 #include <fdtdec.h>
 #include <fdt_support.h>
+#include <linux/hdmi.h>
 #include <linux/list.h>
 #include <linux/compat.h>
 #include <linux/media-bus-format.h>
@@ -48,6 +49,93 @@ static LIST_HEAD(logo_cache_list);
 
 static unsigned long memory_start;
 static unsigned long memory_end;
+
+/*
+ * the phy types are used by different connectors in public.
+ * The current version only has inno hdmi phy for hdmi and tve.
+ */
+enum public_use_phy {
+	NONE,
+	INNO_HDMI_PHY
+};
+
+/* save public phy data */
+struct public_phy_data {
+	void *private_date;
+	const struct rockchip_phy *phy_drv;
+	int phy_node;
+	int public_phy_type;
+	bool phy_init;
+};
+
+/* check which kind of public phy does connector use */
+static int check_public_use_phy(struct display_state *state)
+{
+	int ret = NONE;
+#ifdef CONFIG_ROCKCHIP_INNO_HDMI_PHY
+	struct connector_state *conn_state = &state->conn_state;
+
+	if (!strncmp(dev_read_name(conn_state->dev), "tve", 3) ||
+	    !strncmp(dev_read_name(conn_state->dev), "hdmi", 4))
+		ret = INNO_HDMI_PHY;
+#endif
+
+	return ret;
+}
+
+/*
+ * get public phy driver and initialize it.
+ * The current version only has inno hdmi phy for hdmi and tve.
+ */
+static int get_public_phy(struct display_state *state,
+			  struct public_phy_data *data)
+{
+	struct connector_state *conn_state = &state->conn_state;
+	const struct rockchip_phy *phy;
+	struct udevice *dev;
+	int ret = 0;
+
+	switch (data->public_phy_type) {
+	case INNO_HDMI_PHY:
+#if defined(CONFIG_ROCKCHIP_RK3328)
+		ret = uclass_find_device_by_name(UCLASS_PHY,
+						 "hdmiphy@ff430000", &dev);
+#elif defined(CONFIG_ROCKCHIP_RK322X)
+		ret = uclass_find_device_by_name(UCLASS_PHY,
+						 "hdmi-phy@12030000", &dev);
+#else
+		ret = -EINVAL;
+#endif
+		if (ret) {
+			printf("Warn: can't find phy driver\n");
+			return 0;
+		}
+
+		phy = (const struct rockchip_phy *)dev_get_driver_data(dev);
+		if (!phy) {
+			printf("failed to get phy driver\n");
+			return 0;
+		}
+
+		conn_state->phy_dev = dev;
+		conn_state->phy_node = dev->node;
+		if (!phy->funcs || !phy->funcs->init ||
+		    phy->funcs->init(state)) {
+			printf("failed to init phy driver\n");
+			return -EINVAL;
+		}
+		conn_state->phy = phy;
+
+		printf("inno hdmi phy init success, save it\n");
+		data->phy_node = ofnode_to_offset(conn_state->phy_node);
+		data->private_date = conn_state->phy_private;
+		data->phy_drv = conn_state->phy;
+		data->phy_init = true;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
 
 static void init_display_buffer(ulong base)
 {
@@ -140,17 +228,44 @@ static struct udevice *get_panel_device(struct display_state *state, ofnode conn
 	return NULL;
 }
 
-static int connector_phy_init(struct display_state *state)
+static int connector_phy_init(struct display_state *state,
+			      struct public_phy_data *data)
 {
 	struct connector_state *conn_state = &state->conn_state;
 	const struct rockchip_phy *phy;
 	struct udevice *dev;
-	int ret;
+	int ret, type;
 
+	/* does this connector use public phy with others */
+	type = check_public_use_phy(state);
+	if (type == INNO_HDMI_PHY) {
+		/* there is no public phy was initialized */
+		if (!data->phy_init) {
+			printf("start get public phy\n");
+			data->public_phy_type = type;
+			if (get_public_phy(state, data)) {
+				printf("can't find correct public phy type\n");
+				free(data);
+				return -EINVAL;
+			}
+			return 0;
+		}
+
+		/* if this phy has been initialized, get it directly */
+		conn_state->phy_node = offset_to_ofnode(data->phy_node);
+		conn_state->phy_private = data->private_date;
+		conn_state->phy = data->phy_drv;
+		return 0;
+	}
+
+	/*
+	 * if this connector don't use the same phy with others,
+	 * just get phy as original method.
+	 */
 	ret = uclass_get_device_by_phandle(UCLASS_PHY, conn_state->dev, "phys",
 					   &dev);
 	if (ret) {
-		debug("Warn: can't find phy driver\n");
+		printf("Warn: can't find phy driver\n");
 		return 0;
 	}
 
@@ -168,7 +283,6 @@ static int connector_phy_init(struct display_state *state)
 		printf("failed to init phy driver\n");
 		return -EINVAL;
 	}
-
 	conn_state->phy = phy;
 	return 0;
 }
@@ -405,6 +519,62 @@ void drm_mode_set_crtcinfo(struct drm_display_mode *p, int adjust_flags)
 	p->crtc_hblank_end = max(p->crtc_hsync_end, p->crtc_htotal);
 }
 
+/**
+ * drm_mode_is_420_only - if a given videomode can be only supported in YCBCR420
+ * output format
+ *
+ * @connector: drm connector under action.
+ * @mode: video mode to be tested.
+ *
+ * Returns:
+ * true if the mode can be supported in YCBCR420 format
+ * false if not.
+ */
+bool drm_mode_is_420_only(const struct drm_display_info *display,
+			  struct drm_display_mode *mode)
+{
+	u8 vic = drm_match_cea_mode(mode);
+
+	return test_bit(vic, display->hdmi.y420_vdb_modes);
+}
+
+/**
+ * drm_mode_is_420_also - if a given videomode can be supported in YCBCR420
+ * output format also (along with RGB/YCBCR444/422)
+ *
+ * @display: display under action.
+ * @mode: video mode to be tested.
+ *
+ * Returns:
+ * true if the mode can be support YCBCR420 format
+ * false if not.
+ */
+bool drm_mode_is_420_also(const struct drm_display_info *display,
+			  struct drm_display_mode *mode)
+{
+	u8 vic = drm_match_cea_mode(mode);
+
+	return test_bit(vic, display->hdmi.y420_cmdb_modes);
+}
+
+/**
+ * drm_mode_is_420 - if a given videomode can be supported in YCBCR420
+ * output format
+ *
+ * @display: display under action.
+ * @mode: video mode to be tested.
+ *
+ * Returns:
+ * true if the mode can be supported in YCBCR420 format
+ * false if not.
+ */
+bool drm_mode_is_420(const struct drm_display_info *display,
+		     struct drm_display_mode *mode)
+{
+	return drm_mode_is_420_only(display, mode) ||
+		drm_mode_is_420_also(display, mode);
+}
+
 static int display_get_timing(struct display_state *state)
 {
 	struct connector_state *conn_state = &state->conn_state;
@@ -477,7 +647,7 @@ static int display_init(struct display_state *state)
 	const struct rockchip_connector *conn = conn_state->connector;
 	const struct rockchip_connector_funcs *conn_funcs = conn->funcs;
 	struct crtc_state *crtc_state = &state->crtc_state;
-	const struct rockchip_crtc *crtc = crtc_state->crtc;
+	struct rockchip_crtc *crtc = crtc_state->crtc;
 	const struct rockchip_crtc_funcs *crtc_funcs = crtc->funcs;
 	struct drm_display_mode *mode = &conn_state->mode;
 	int ret = 0;
@@ -504,8 +674,23 @@ static int display_init(struct display_state *state)
 	/*
 	 * support hotplug, but not connect;
 	 */
+#ifdef CONFIG_ROCKCHIP_DRM_TVE
+	if (crtc->hdmi_hpd && conn_state->type == DRM_MODE_CONNECTOR_TV) {
+		printf("hdmi plugin ,skip tve\n");
+		goto deinit;
+	}
+#elif defined(CONFIG_ROCKCHIP_DRM_RK1000)
+	if (crtc->hdmi_hpd && conn_state->type == DRM_MODE_CONNECTOR_LVDS) {
+		printf("hdmi plugin ,skip tve\n");
+		goto deinit;
+	}
+#endif
 	if (conn_funcs->detect) {
 		ret = conn_funcs->detect(state);
+#if defined(CONFIG_ROCKCHIP_DRM_TVE) || defined(CONFIG_ROCKCHIP_DRM_RK1000)
+		if (conn_state->type == DRM_MODE_CONNECTOR_HDMIA)
+			crtc->hdmi_hpd = ret;
+#endif
 		if (!ret)
 			goto deinit;
 	}
@@ -526,7 +711,6 @@ static int display_init(struct display_state *state)
 		if (ret)
 			goto deinit;
 	}
-
 	state->is_init = 1;
 
 	return 0;
@@ -1045,6 +1229,48 @@ void rockchip_show_logo(void)
 	}
 }
 
+static struct udevice *rockchip_of_find_connector(struct udevice *dev)
+{
+	ofnode conn_node, port, ep;
+	struct udevice *conn_dev;
+	int ret;
+
+	port = dev_read_subnode(dev, "port");
+	if (!ofnode_valid(port))
+		return NULL;
+
+	ofnode_for_each_subnode(ep, port) {
+		ofnode _ep, _port, _ports;
+		uint phandle;
+
+		if (ofnode_read_u32(ep, "remote-endpoint", &phandle))
+			continue;
+
+		_ep = ofnode_get_by_phandle(phandle);
+		if (!ofnode_valid(_ep) || !ofnode_is_available(_ep))
+			continue;
+
+		_port = ofnode_get_parent(_ep);
+		if (!ofnode_valid(_port))
+			continue;
+
+		_ports = ofnode_get_parent(_port);
+		if (!ofnode_valid(_ports))
+			continue;
+
+		conn_node = ofnode_get_parent(_ports);
+		if (!ofnode_valid(conn_node) || !ofnode_is_available(conn_node))
+			continue;
+
+		ret = uclass_get_device_by_ofnode(UCLASS_DISPLAY, conn_node,
+						  &conn_dev);
+		if (!ret)
+			return conn_dev;
+	}
+
+	return NULL;
+}
+
 static int rockchip_display_probe(struct udevice *dev)
 {
 	struct video_priv *uc_priv = dev_get_uclass_priv(dev);
@@ -1052,18 +1278,26 @@ static int rockchip_display_probe(struct udevice *dev)
 	const void *blob = gd->fdt_blob;
 	int phandle;
 	struct udevice *crtc_dev, *conn_dev;
-	const struct rockchip_crtc *crtc;
+	struct rockchip_crtc *crtc;
 	const struct rockchip_connector *conn;
 	struct display_state *s;
 	const char *name;
 	int ret;
 	ofnode node, route_node;
 	struct device_node *port_node, *vop_node, *ep_node;
-	struct device_node *cnt_node, *p;
+	struct public_phy_data *data;
 
 	/* Before relocation we don't need to do anything */
 	if (!(gd->flags & GD_FLG_RELOC))
 		return 0;
+
+	data = malloc(sizeof(struct public_phy_data));
+	if (!data) {
+		printf("failed to alloc phy data\n");
+		return -ENOMEM;
+	}
+	data->phy_init = false;
+
 	init_display_buffer(plat->base);
 
 	route_node = dev_read_subnode(dev, "route");
@@ -1100,30 +1334,14 @@ static int rockchip_display_probe(struct udevice *dev)
 			printf("Warn: can't find crtc driver %d\n", ret);
 			continue;
 		}
-		crtc = (const struct rockchip_crtc *)dev_get_driver_data(crtc_dev);
+		crtc = (struct rockchip_crtc *)dev_get_driver_data(crtc_dev);
 
-		phandle = ofnode_read_u32_default(np_to_ofnode(ep_node),
-						  "remote-endpoint", -1);
-		cnt_node = of_find_node_by_phandle(phandle);
-		if (phandle < 0) {
-			printf("Warn: can't find remote-endpoint's handle\n");
-			continue;
-		}
-		while (cnt_node->parent){
-			p = of_get_parent(cnt_node);
-			if (!strcmp(p->full_name, "/"))
-				break;
-			cnt_node = p;
-		}
-		if (!of_device_is_available(cnt_node))
-			continue;
-		ret = uclass_get_device_by_ofnode(UCLASS_DISPLAY,
-						  np_to_ofnode(cnt_node),
-						  &conn_dev);
-		if (ret) {
+		conn_dev = rockchip_of_find_connector(crtc_dev);
+		if (!conn_dev) {
 			printf("Warn: can't find connect driver\n");
 			continue;
 		}
+
 		conn = (const struct rockchip_connector *)dev_get_driver_data(conn_dev);
 
 		s = malloc(sizeof(*s));
@@ -1133,8 +1351,12 @@ static int rockchip_display_probe(struct udevice *dev)
 		memset(s, 0, sizeof(*s));
 
 		INIT_LIST_HEAD(&s->head);
-		ret = ofnode_read_string_index(node, "logo,uboot", 0, &s->ulogo_name);
-		ret = ofnode_read_string_index(node, "logo,kernel", 0, &s->klogo_name);
+		ret = ofnode_read_string_index(node, "logo,uboot", 0, &name);
+		if (!ret)
+			memcpy(s->ulogo_name, name, strlen(name));
+		ret = ofnode_read_string_index(node, "logo,kernel", 0, &name);
+		if (!ret)
+			memcpy(s->klogo_name, name, strlen(name));
 		ret = ofnode_read_string_index(node, "logo,mode", 0, &name);
 		if (!strcmp(name, "fullscreen"))
 			s->logo_mode = ROCKCHIP_DISPLAY_FULLSCREEN;
@@ -1147,7 +1369,7 @@ static int rockchip_display_probe(struct udevice *dev)
 			s->charge_logo_mode = ROCKCHIP_DISPLAY_CENTER;
 
 		s->blob = blob;
-		s->conn_state.node = np_to_ofnode(cnt_node);
+		s->conn_state.node = conn_dev->node;
 		s->conn_state.dev = conn_dev;
 		s->conn_state.connector = conn;
 		s->conn_state.overscan.left_margin = 100;
@@ -1167,13 +1389,12 @@ static int rockchip_display_probe(struct udevice *dev)
 			continue;
 		}
 
-		if (connector_phy_init(s)) {
+		if (connector_phy_init(s, data)) {
 			printf("Warn: Failed to init phy drivers\n");
 			free(s);
 			continue;
 		}
 		list_add_tail(&s->head, &rockchip_display_list);
-
 	}
 
 	if (list_empty(&rockchip_display_list)) {

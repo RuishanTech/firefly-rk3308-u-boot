@@ -64,7 +64,7 @@ struct rockchip_mcu_timing {
 
 struct crtc_state {
 	struct udevice *dev;
-	const struct rockchip_crtc *crtc;
+	struct rockchip_crtc *crtc;
 	void *private;
 	ofnode node;
 	int crtc_id;
@@ -154,8 +154,8 @@ struct display_state {
 	struct connector_state conn_state;
 	struct panel_state panel_state;
 
-	const char *ulogo_name;
-	const char *klogo_name;
+	char ulogo_name[30];
+	char klogo_name[30];
 
 	struct logo_info logo;
 	int logo_mode;
@@ -170,5 +170,7 @@ struct display_state {
 
 int drm_mode_vrefresh(const struct drm_display_mode *mode);
 int display_send_mcu_cmd(struct display_state *state, u32 type, u32 val);
+bool drm_mode_is_420(const struct drm_display_info *display,
+		     struct drm_display_mode *mode);
 
 #endif

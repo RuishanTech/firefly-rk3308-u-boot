@@ -115,7 +115,7 @@ static int charge_display(void)
 	ret = uclass_get_device(UCLASS_CHARGE_DISPLAY, 0, &dev);
 	if (ret) {
 		if (ret != -ENODEV) {
-			printf("Get UCLASS CHARGE DISPLAY failed: %d\n", ret);
+			debug("Get UCLASS CHARGE DISPLAY failed: %d\n", ret);
 			return ret;
 		} else {
 			debug("Can't find charge display driver\n");
@@ -259,13 +259,11 @@ int board_fdt_fixup(void *blob)
 	return ret;
 }
 
-#if !defined(CONFIG_SYS_DCACHE_OFF) && !defined(CONFIG_ARM64)
 void enable_caches(void)
 {
-	/* Enable D-cache. I-cache is already enabled in start.S */
+	icache_enable();
 	dcache_enable();
 }
-#endif
 
 #if defined(CONFIG_USB_GADGET) && defined(CONFIG_USB_GADGET_DWC2_OTG)
 #include <fdt_support.h>
@@ -306,10 +304,18 @@ int board_usb_init(int index, enum usb_init_type init)
 		/*
 		 * With kernel dtb support, rk3288 dwc2 otg node
 		 * use the rockchip legacy dwc2 driver "dwc_otg_310"
-		 * with the compatible "rockchip,rk3288_usb20_otg".
+		 * with the compatible "rockchip,rk3288_usb20_otg",
+		 * and rk3368 also use the "dwc_otg_310" driver with
+		 * the compatible "rockchip,rk3368-usb".
 		 */
+#if defined(CONFIG_ROCKCHIP_RK3288)
 		node = fdt_node_offset_by_compatible(blob, -1,
 				"rockchip,rk3288_usb20_otg");
+#elif defined(CONFIG_ROCKCHIP_RK3368)
+		node = fdt_node_offset_by_compatible(blob, -1,
+				"rockchip,rk3368-usb");
+#endif
+
 		if (node > 0) {
 			matched = true;
 		} else {

@@ -163,6 +163,12 @@ static int init_resource_list(struct resource_img_hdr *hdr)
 	int resource_found = 0;
 	struct blk_desc *dev_desc;
 	disk_partition_t part_info;
+
+/*
+ * Primary detect AOSP format image, try to get resource image from
+ * boot/recovery partition. If not, it's an RK format image and try
+ * to get from resource partition.
+ */
 #ifdef CONFIG_ANDROID_BOOT_IMAGE
 	struct andr_img_hdr *andr_hdr;
 	char *boot_partname = PART_BOOT;
@@ -194,6 +200,7 @@ static int init_resource_list(struct resource_img_hdr *hdr)
 	/* Get boot mode from misc */
 	if (rockchip_get_boot_mode() == BOOT_MODE_RECOVERY)
 		boot_partname = PART_RECOVERY;
+
 	/* Read boot/recovery and chenc if this is an AOSP img */
 #ifdef CONFIG_ANDROID_AB
 	char slot_suffix[3] = {0};
@@ -204,13 +211,17 @@ static int init_resource_list(struct resource_img_hdr *hdr)
 	if (boot_partname == NULL)
 		goto out;
 #endif
-	ret = part_get_info_by_name(dev_desc, boot_partname,
-					 &part_info);
+	ret = part_get_info_by_name(dev_desc, boot_partname, &part_info);
 	if (ret < 0) {
 		printf("fail to get %s part\n", boot_partname);
 		/* RKIMG can support part table without 'boot' */
 		goto next;
 	}
+
+	/*
+	 * Only read header and check magic, is a AOSP format image?
+	 * If so, get resource image from second part.
+	 */
 	andr_hdr = (void *)hdr;
 	ret = blk_dread(dev_desc, part_info.start, 1, andr_hdr);
 	if (ret != 1) {
@@ -232,10 +243,13 @@ static int init_resource_list(struct resource_img_hdr *hdr)
 	}
 next:
 #endif
+	/*
+	 * If not found resource image in AOSP format images(boot/recovery part),
+	 * try to read RK format images(resource part).
+	 */
 	if (!resource_found) {
 		/* Read resource from Rockchip Resource partition */
-		ret = part_get_info_by_name(dev_desc, PART_RESOURCE,
-					 &part_info);
+		ret = part_get_info_by_name(dev_desc, PART_RESOURCE, &part_info);
 		if (ret < 0) {
 			printf("fail to get %s part\n", PART_RESOURCE);
 			goto out;
@@ -244,18 +258,23 @@ next:
 		debug("%s Load resource from %s\n", __func__, part_info.name);
 	}
 
+	/* Only read header and check magic */
 	ret = blk_dread(dev_desc, offset, 1, hdr);
 	if (ret != 1)
 		goto out;
+
 	ret = resource_image_check_header(hdr);
 	if (ret < 0)
 		goto out;
+
 	content = memalign(ARCH_DMA_MINALIGN,
 			   hdr->e_blks * hdr->e_nums * RK_BLK_SIZE);
 	if (!content) {
 		printf("alloc memory for content failed\n");
 		goto out;
 	}
+
+	/* Real read whole resource image */
 	ret = blk_dread(dev_desc, offset + hdr->c_offset,
 			hdr->e_blks * hdr->e_nums, content);
 	if (ret != (hdr->e_blks * hdr->e_nums))
@@ -401,7 +420,13 @@ static int rockchip_read_dtb_by_adc(const char *file_name)
 			return -EINVAL;
 		}
 
-		/* Read raw adc value */
+		/*
+		 * Read raw adc value
+		 *
+		 * It doesn't need to read adc value every loop, reading once
+		 * is enough. We use cached_v[] to save what we have read, zero
+		 * means not read before.
+		 */
 		if (cached_v[channel] == 0) {
 			ret = adc_channel_single_shot(dev_name,
 						      channel, &raw_adc);
@@ -523,12 +548,17 @@ static int rockchip_read_dtb_by_gpio(const char *file_name)
 		pin  = *(p + 2) - '0';
 		lvl  = *(p + 4) - '0';
 
+		/*
+		 * It doesn't need to read gpio value every loop, reading once
+		 * is enough. We use cached_v[] to save what we have read, zero
+		 * means not read before.
+		 */
 		if (cached_v[port] == 0)
 			cached_v[port] =
 				readl(gpio_base_addr[port] + GPIO_EXT_PORT);
 
 		/* Verify result */
-		bit = bank * 32 + pin;
+		bit = bank * 8 + pin;
 		val = cached_v[port] & (1 << bit) ? 1 : 0;
 
 		if (val == !!lvl) {
@@ -551,6 +581,7 @@ int rockchip_read_dtb_file(void *fdt_addr)
 	struct resource_file *file;
 	struct list_head *node;
 	char *dtb_name = DTB_FILE;
+	int ret;
 
 	if (list_empty(&entrys_head))
 		init_resource_list(NULL);
@@ -574,5 +605,14 @@ int rockchip_read_dtb_file(void *fdt_addr)
 
 	printf("DTB: %s\n", dtb_name);
 
-	return rockchip_read_resource_file((void *)fdt_addr, dtb_name, 0, 0);
+	ret = rockchip_read_resource_file((void *)fdt_addr, dtb_name, 0, 0);
+	if (ret < 0)
+		return ret;
+
+#if defined(CONFIG_CMD_DTIMG) && \
+    defined(CONFIG_OF_LIBFDT_OVERLAY) && defined(CONFIG_USING_KERNEL_DTB)
+	android_fdt_overlay_apply((void *)fdt_addr);
+#endif
+
+	return ret;
 }

@@ -14,6 +14,8 @@
 #include <asm/arch/resource_img.h>
 #endif
 
+DECLARE_GLOBAL_DATA_PTR;
+
 #define ANDROID_IMAGE_DEFAULT_KERNEL_ADDR	0x10008000
 #define ANDROID_ARG_FDT_FILENAME "rk-kernel.dtb"
 
@@ -90,7 +92,7 @@ int android_image_get_kernel(const struct andr_img_hdr *hdr, int verify,
 
 	int len = 0;
 	if (*hdr->cmdline) {
-		printf("Kernel command line: %s\n", hdr->cmdline);
+		debug("Kernel command line: %s\n", hdr->cmdline);
 		len += strlen(hdr->cmdline);
 	}
 
@@ -141,6 +143,9 @@ ulong android_image_get_end(const struct andr_img_hdr *hdr)
 	end += ALIGN(hdr->ramdisk_size, hdr->page_size);
 	end += ALIGN(hdr->second_size, hdr->page_size);
 
+	if (hdr->header_version >= 1)
+		end += ALIGN(hdr->recovery_dtbo_size, hdr->page_size);
+
 	return end;
 }
 
@@ -188,7 +193,15 @@ int android_image_get_fdt(const struct andr_img_hdr *hdr,
 
 	printf("FDT load addr 0x%08x size %u KiB\n",
 	       hdr->second_addr, DIV_ROUND_UP(hdr->second_size, 1024));
-
+/*
+ * Actually we have read kernel dtb in init_kernel_dtb() and do overlay
+ * when CONFIG_USING_KERNEL_DTB is enbled, and we also didn't update it at all.
+ * So that we pass current fdt blob to kernel, otherwise we have to do overlay
+ * again which wastes time.
+ */
+#if defined(CONFIG_OF_LIBFDT_OVERLAY) && defined(CONFIG_USING_KERNEL_DTB)
+	*rd_data = (ulong)gd->fdt_blob;
+#else
 	*rd_data = (unsigned long)hdr;
 	*rd_data += hdr->page_size;
 	*rd_data += ALIGN(hdr->kernel_size, hdr->page_size);
@@ -198,6 +211,8 @@ int android_image_get_fdt(const struct andr_img_hdr *hdr,
 		     ANDROID_ARG_FDT_FILENAME))
 			* 512;
 #endif
+#endif
+
 	return 0;
 }
 
@@ -300,6 +315,7 @@ void android_print_contents(const struct andr_img_hdr *hdr)
 	/* os_version = ver << 11 | lvl */
 	u32 os_ver = hdr->os_version >> 11;
 	u32 os_lvl = hdr->os_version & ((1U << 11) - 1);
+	u32 header_version = hdr->header_version;
 
 	printf("%skernel size:      %x\n", p, hdr->kernel_size);
 	printf("%skernel address:   %x\n", p, hdr->kernel_addr);
@@ -309,6 +325,7 @@ void android_print_contents(const struct andr_img_hdr *hdr)
 	printf("%ssecond address:   %x\n", p, hdr->second_addr);
 	printf("%stags address:     %x\n", p, hdr->tags_addr);
 	printf("%spage size:        %x\n", p, hdr->page_size);
+	printf("%sheader_version:   %x\n", p, header_version);
 	/* ver = A << 14 | B << 7 | C         (7 bits for each of A, B, C)
 	 * lvl = ((Y - 2000) & 127) << 4 | M  (7 bits for Y, 4 bits for M) */
 	printf("%sos_version:       %x (ver: %u.%u.%u, level: %u.%u)\n",
@@ -317,5 +334,11 @@ void android_print_contents(const struct andr_img_hdr *hdr)
 	       (os_lvl >> 4) + 2000, os_lvl & 0x0F);
 	printf("%sname:             %s\n", p, hdr->name);
 	printf("%scmdline:          %s\n", p, hdr->cmdline);
+
+	if (header_version >= 1) {
+		printf("%srecovery dtbo size:    %x\n", p, hdr->recovery_dtbo_size);
+		printf("%srecovery dtbo offset:  %llx\n", p, hdr->recovery_dtbo_offset);
+		printf("%sheader size:           %x\n", p, hdr->header_size);
+	}
 }
 #endif
