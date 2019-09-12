@@ -41,6 +41,8 @@ static struct flash_info spi_flash_tbl[] = {
 	{0x207018, 128, 8, 0x03, 0x02, 0x6B, 0x32, 0x20, 0xD8, 0x0C, 15, 0, 0},
 	/* EN25QH128A */
 	{0x1c7018, 128, 8, 0x03, 0x02, 0x6B, 0x32, 0x20, 0xD8, 0x0C, 15, 0, 0},
+	/* MX25L51245G08G */
+	{0xc2201a, 128, 8, 0x13, 0x12, 0x6C, 0x3E, 0x21, 0xDC, 0x10, 17, 6, 0},
 };
 
 static const u8 sfnor_dev_code[] = {
@@ -536,7 +538,7 @@ int snor_init(struct SFNOR_DEV *p_dev)
 
 	memset(p_dev, 0, sizeof(struct SFNOR_DEV));
 	snor_read_id(id_byte);
-	PRINT_SFC_I("sfc nor id: %x %x %x\n",
+	PRINT_SFC_E("sfc nor id: %x %x %x\n",
 		    id_byte[0], id_byte[1], id_byte[2]);
 	if (0xFF == id_byte[0] || 0x00 == id_byte[0]) {
 		err = SFC_ERROR;

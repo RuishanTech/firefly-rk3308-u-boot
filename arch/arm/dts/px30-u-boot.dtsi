@@ -9,12 +9,19 @@
 		mmc0 = &emmc;
 		mmc1 = &sdmmc;
 	};
+
+	chosen {
+		stdout-path = &uart2;
+	};
+};
+
+&dmc {
+	u-boot,dm-pre-reloc;
 };
 
 &uart2 {
 	clock-frequency = <24000000>;
 	u-boot,dm-pre-reloc;
-	status = "okay";
 };
 
 &nandc0 {
@@ -35,6 +42,10 @@
 };
 
 &cru {
+	u-boot,dm-pre-reloc;
+};
+
+&crypto {
 	u-boot,dm-pre-reloc;
 };
 

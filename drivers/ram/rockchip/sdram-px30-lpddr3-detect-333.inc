@@ -1,16 +1,18 @@
 {
 	{
-		.rank = 0x1,
-		.col = 0xC,
-		.bk = 0x3,
-		.bw = 0x1,
-		.dbw = 0x0,
-		.row_3_4 = 0x0,
-		.cs0_row = 0x10,
-		.cs1_row = 0x10,
-		.cs0_high16bit_row = 0x10,
-		.cs1_high16bit_row = 0x10,
-		.ddrconfig = 0,
+		{
+			.rank = 0x1,
+			.col = 0xC,
+			.bk = 0x3,
+			.bw = 0x1,
+			.dbw = 0x0,
+			.row_3_4 = 0x0,
+			.cs0_row = 0x10,
+			.cs1_row = 0x10,
+			.cs0_high16bit_row = 0x10,
+			.cs1_high16bit_row = 0x10,
+			.ddrconfig = 0,
+		},
 		{
 			{0x290a060a},
 			{0x08020303},
@@ -21,9 +23,13 @@
 			0x000000ff
 		}
 	},
-	.ddr_freq = 333,
-	.dramtype = LPDDR3,
-	.odt = 0,
+	{
+		.ddr_freq = 333,
+		.dramtype = LPDDR3,
+		.num_channels = 1,
+		.stride = 0,
+		.odt = 0,
+	},
 	{
 		{
 			{0x00000000, 0x43041008},	/* MSTR */
@@ -47,7 +53,7 @@
 			{0x00000180, 0x003c000f},	/* ZQCTL0 */
 			{0x00000184, 0x00900000},	/* ZQCTL1 */
 			{0x00000190, 0x07020000},	/* DFITMG0 */
-			{0x00000198, 0x05000101},	/* DFILPCFG0 */
+			{0x00000198, 0x07000101},	/* DFILPCFG0 */
 			{0x000001a0, 0xc0400003},	/* DFIUPD0 */
 			{0x00000240, 0x0900090c},	/* ODTCFG */
 			{0x00000244, 0x00000101},	/* ODTMAP */

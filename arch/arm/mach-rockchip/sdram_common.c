@@ -5,126 +5,18 @@
  */
 
 #include <common.h>
+#include <bidram.h>
 #include <dm.h>
 #include <ram.h>
 #include <asm/io.h>
+#include <asm/arch/param.h>
+#include <asm/arch/rk_atags.h>
 #include <asm/arch/sdram_common.h>
 #include <dm/uclass-internal.h>
 
 DECLARE_GLOBAL_DATA_PTR;
-struct ddr_param{
-	u32 count;
-	u32 reserved;
-	u64 bank_addr;
-	u64 bank_size;
-};
 #define PARAM_DRAM_INFO_OFFSET 0x2000000
-
 #define TRUST_PARAMETER_OFFSET    (34 * 1024 * 1024)
-
-struct tos_parameter_t {
-	u32 version;
-	u32 checksum;
-	struct {
-		char name[8];
-		s64 phy_addr;
-		u32 size;
-		u32 flags;
-	}tee_mem;
-	struct {
-		char name[8];
-		s64 phy_addr;
-		u32 size;
-		u32 flags;
-	}drm_mem;
-	s64 reserve[8];
-};
-
-#if defined(CONFIG_SPL_FRAMEWORK) || !defined(CONFIG_SPL_OF_PLATDATA)
-static uint16_t trust_checksum(const uint8_t *buf, uint16_t len)
-{
-	uint16_t i;
-	uint16_t checksum = 0;
-
-	for (i = 0; i < len; i++) {
-		if (i % 2)
-			checksum += buf[i] << 8;
-		else
-			checksum += buf[i];
-	}
-	checksum = ~checksum;
-
-	return checksum;
-}
-
-int dram_init_banksize(void)
-{
-	size_t top = min((unsigned long)(gd->ram_size + CONFIG_SYS_SDRAM_BASE),
-			 gd->ram_top);
-	struct tos_parameter_t *tos_parameter;
-	u32 checksum __maybe_unused;
-
-	tos_parameter = (struct tos_parameter_t *)(CONFIG_SYS_SDRAM_BASE +
-			TRUST_PARAMETER_OFFSET);
-
-	checksum = trust_checksum((uint8_t *)(unsigned long)tos_parameter + 8,
-				  sizeof(struct tos_parameter_t) - 8);
-
-#if defined(CONFIG_ARM64) || defined(CONFIG_ARM64_BOOT_AARCH32)
-	/* Reserve 0x200000 for ATF bl31 */
-	gd->bd->bi_dram[0].start = CONFIG_SYS_SDRAM_BASE + 0x200000;
-#else
-	gd->bd->bi_dram[0].start = CONFIG_SYS_SDRAM_BASE;
-#endif
-	gd->bd->bi_dram[0].size = top - gd->bd->bi_dram[0].start;
-
-/*
- * OP-TEE:
- *	ARM64(AArch32) 64-bit: enable dcache; (U-boot: map region dcache cachable)
- *	ARM 32-bit: disable dcache; (U-boot: map region dcache off)
- */
-
-#if !defined(CONFIG_ARM64_BOOT_AARCH32)
-	if ((checksum == tos_parameter->checksum) &&
-	    (tos_parameter->tee_mem.flags == 1)) {
-		gd->bd->bi_dram[0].size = tos_parameter->tee_mem.phy_addr
-					- gd->bd->bi_dram[0].start;
-		gd->bd->bi_dram[1].start = tos_parameter->tee_mem.phy_addr +
-					tos_parameter->tee_mem.size;
-		gd->bd->bi_dram[1].size = top - gd->bd->bi_dram[1].start;
-	}
-#endif
-
-	return 0;
-}
-
-#if defined(CONFIG_ARM64_BOOT_AARCH32)
-int dram_initr_banksize(void)
-{
-	size_t top = min((unsigned long)(gd->ram_size + CONFIG_SYS_SDRAM_BASE),
-			 gd->ram_top);
-	struct tos_parameter_t *tos_parameter;
-	u32 checksum;
-
-	tos_parameter = (struct tos_parameter_t *)(CONFIG_SYS_SDRAM_BASE +
-			TRUST_PARAMETER_OFFSET);
-
-	checksum = trust_checksum((uint8_t *)(unsigned long)tos_parameter + 8,
-				  sizeof(struct tos_parameter_t) - 8);
-
-	if ((checksum == tos_parameter->checksum) &&
-	    (tos_parameter->tee_mem.flags == 1)) {
-		gd->bd->bi_dram[0].size = tos_parameter->tee_mem.phy_addr
-					- gd->bd->bi_dram[0].start;
-		gd->bd->bi_dram[1].start = tos_parameter->tee_mem.phy_addr +
-					tos_parameter->tee_mem.size;
-		gd->bd->bi_dram[1].size = top - gd->bd->bi_dram[1].start;
-	}
-
-	return 0;
-}
-#endif
-#endif
 
 size_t rockchip_sdram_size(phys_addr_t reg)
 {
@@ -219,26 +111,76 @@ size_t rockchip_sdram_size(phys_addr_t reg)
 	return (size_t)size_mb << 20;
 }
 
+static unsigned int get_ddr_os_reg(void)
+{
+	u32 os_reg = 0;
+
+#if defined(CONFIG_ROCKCHIP_PX30)
+	os_reg = readl(0xff010208);
+#elif defined(CONFIG_ROCKCHIP_RK3328)
+	os_reg = readl(0xff1005d0);
+#elif defined(CONFIG_ROCKCHIP_RK3399)
+	os_reg = readl(0xff320308);
+#elif defined(CONFIG_ROCKCHIP_RK322X)
+	os_reg = readl(0x110005d0);
+#elif defined(CONFIG_ROCKCHIP_RK3368)
+	os_reg = readl(0xff738208);
+#elif defined(CONFIG_ROCKCHIP_RK3288)
+	os_reg = readl(0x20004048);
+#elif defined(CONFIG_ROCKCHIP_RK3036)
+	os_reg = readl(0x200081cc);
+#elif defined(CONFIG_ROCKCHIP_RK3308)
+	os_reg = readl(0xff000508);
+#elif defined(CONFIG_ROCKCHIP_RK1808)
+	os_reg = readl(0xfe020208);
+#else
+	printf("unsupported chip type, get page size fail\n");
+#endif
+
+	return os_reg;
+}
+
+unsigned int get_page_size(void)
+{
+	u32 os_reg;
+	u32 col, bw;
+	int page_size;
+
+	os_reg = get_ddr_os_reg();
+	if (!os_reg)
+		return 0;
+
+	col = 9 + (os_reg >> SYS_REG_COL_SHIFT(0) & SYS_REG_COL_MASK);
+	bw = (2 >> ((os_reg >> SYS_REG_BW_SHIFT(0)) & SYS_REG_BW_MASK));
+	page_size = 1u << (col + bw);
+
+	return page_size;
+}
+
+unsigned int get_ddr_bw(void)
+{
+	u32 os_reg;
+	u32 bw = 2;
+
+	os_reg = get_ddr_os_reg();
+	if (os_reg)
+		bw = 2 >> ((os_reg >> SYS_REG_BW_SHIFT(0)) & SYS_REG_BW_MASK);
+	return bw;
+}
+
 #if defined(CONFIG_SPL_FRAMEWORK) || !defined(CONFIG_SPL_OF_PLATDATA)
+int dram_init_banksize(void)
+{
+	bidram_gen_gd_bi_dram();
+
+	return 0;
+}
+
 int dram_init(void)
 {
-	struct ram_info ram;
-	struct udevice *dev;
-	int ret;
-
-	ret = uclass_get_device(UCLASS_RAM, 0, &dev);
-	if (ret) {
-		debug("DRAM init failed: %d\n", ret);
-		return ret;
-	}
-	ret = ram_get_info(dev, &ram);
-	if (ret) {
-		debug("Cannot get DRAM size: %d\n", ret);
-		return ret;
-	}
-	gd->ram_size = ram.size;
-	debug("SDRAM base=%lx, size=%lx\n",
-	      (unsigned long)ram.base, (unsigned long)ram.size);
+	gd->ram_size = bidram_get_ram_size();
+	if (!gd->ram_size)
+		return -ENOMEM;
 
 	return 0;
 }
@@ -251,14 +193,15 @@ ulong board_get_usable_ram_top(ulong total_size)
 	return (gd->ram_top > top) ? top : gd->ram_top;
 }
 
-int rockchip_setup_ddr_param(struct ram_info *info)
+int rockchip_setup_ddr_param(struct ddr_param *info)
 {
+	u32 i;
 	struct ddr_param *dinfo = (struct ddr_param *)(CONFIG_SYS_SDRAM_BASE +
 					PARAM_DRAM_INFO_OFFSET);
 
-	dinfo->count = 1;
-	dinfo->bank_addr = info->base;
-	dinfo->bank_size = info->size;
+	dinfo->count = info->count;
+	for (i = 0; i < (info->count * 2); i++)
+		dinfo->para[i] = info->para[i];
 
 	return 0;
 }

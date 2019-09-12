@@ -218,6 +218,13 @@ config ARM_SMCCC
 	  This should be enabled if U-Boot needs to communicate with system
 	  firmware (for example, PSCI) according to SMCCC.
 
+config ARM_CPU_SUSPEND
+	bool "Support for ARM cpu suspend and resume"
+	depends on CPU_V7 || ARM64
+	help
+	  Say Y here if you want to enable ARM cpu suspend/resume which allows
+	  to poweroff cpu power supply.
+
 config SEMIHOSTING
 	bool "support boot from semihosting"
 	help
@@ -1122,7 +1129,7 @@ config ARCH_ROCKCHIP
 	select SPL_SYS_MALLOC_SIMPLE if SPL
 	select DM_GPIO
 	select DM_I2C
-	select DM_MMC
+	select DM_MMC if !DM_RAMDISK
 	select DM_SERIAL
 	select DM_SPI
 	select DM_SPI_FLASH
@@ -1132,6 +1139,7 @@ config ARCH_ROCKCHIP
 	select CMD_ROCKUSB if USB_GADGET_DOWNLOAD
 	select ENABLE_ARM_SOC_BOOT0_HOOK
 	select SYS_NS16550
+	select SKIP_RELOCATE_UBOOT if !ARM64
 	imply CMD_FASTBOOT
 	imply FASTBOOT
 	imply FAT_WRITE

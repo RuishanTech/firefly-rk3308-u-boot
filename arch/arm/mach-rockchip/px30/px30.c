@@ -11,17 +11,22 @@
 #include <asm/arch/grf_px30.h>
 #include <asm/arch/hardware.h>
 #include <asm/arch/uart.h>
-#include <asm/armv8/mmu.h>
 #include <asm/arch/clock.h>
 #include <asm/arch/cru_px30.h>
 #include <dt-bindings/clock/px30-cru.h>
 
 #define PMU_PWRDN_CON			0xff000018
+#define GRF_CPU_CON1			0xff140504
+
+#define VIDEO_PHY_BASE			0xff2e0000
 
 #define SERVICE_CORE_ADDR		0xff508000
 #define QOS_PRIORITY			0x08
 
 #define QOS_PRIORITY_LEVEL(h, l)	((((h) & 3) << 8) | ((l) & 3))
+
+#ifdef CONFIG_ARM64
+#include <asm/armv8/mmu.h>
 
 static struct mm_region px30_mem_map[] = {
 	{
@@ -44,6 +49,7 @@ static struct mm_region px30_mem_map[] = {
 };
 
 struct mm_region *mem_map = px30_mem_map;
+#endif
 
 int arch_cpu_init(void)
 {
@@ -58,6 +64,13 @@ int arch_cpu_init(void)
 	/* Set cpu qos priority */
 	writel(QOS_PRIORITY_LEVEL(1, 1), SERVICE_CORE_ADDR + QOS_PRIORITY);
 #endif
+
+	/* Disable video phy bandgap by default */
+	writel(0x82, VIDEO_PHY_BASE + 0x0000);
+	writel(0x05, VIDEO_PHY_BASE + 0x03ac);
+
+	/* Clear the force_jtag */
+	rk_clrreg(GRF_CPU_CON1, 1 << 7);
 
 	return 0;
 }
@@ -101,7 +114,7 @@ void board_debug_uart_init(void)
 		GPIO2B5_GPIO		= 0,
 		GPIO2B5_PWM2,
 
-		GPIO2B4_SHIFT		= 4,
+		GPIO2B4_SHIFT		= 0,
 		GPIO2B4_MASK		= 0xf << GPIO2B4_SHIFT,
 		GPIO2B4_GPIO		= 0,
 		GPIO2B4_CIF_D0M0,
@@ -156,7 +169,7 @@ void board_debug_uart_init(void)
 		GPIO1D1_GPIO		= 0,
 		GPIO1D1_SDIO_D3,
 
-		GPIO1D0_SHIFT		= 4,
+		GPIO1D0_SHIFT		= 0,
 		GPIO1D0_MASK		= 0xf << GPIO1D0_SHIFT,
 		GPIO1D0_GPIO		= 0,
 		GPIO1D0_SDIO_D2,
@@ -194,6 +207,7 @@ int set_armclk_rate(void)
 		printf("Failed to set armclk %lu\n", priv->armclk_hz);
 		return ret;
 	}
+	priv->set_armclk_rate = true;
 
 	return 0;
 }
