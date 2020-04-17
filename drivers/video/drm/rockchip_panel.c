@@ -59,6 +59,24 @@ struct rockchip_panel_plat {
 	struct rockchip_panel_cmds *off_cmds;
 };
 
+struct pwrctr {
+	char name[32];
+	struct gpio_desc gpio;
+	int atv_val;
+	int delay;
+};
+
+struct rockchip_pwrctr_list {
+	struct list_head list;
+	struct pwrctr pc;
+};
+
+struct rockchip_pwrctr {
+	struct list_head pclist_head;
+	int debug;
+	bool node_found;
+};
+
 struct rockchip_panel_priv {
 	bool prepared;
 	bool enabled;
@@ -66,6 +84,9 @@ struct rockchip_panel_priv {
 	struct udevice *backlight;
 	struct gpio_desc enable_gpio;
 	struct gpio_desc reset_gpio;
+
+	struct udevice *dev;
+	struct rockchip_pwrctr pwrctr;
 
 	int cmd_type;
 	struct gpio_desc spi_sdi_gpio;
@@ -125,6 +146,66 @@ static int rockchip_panel_parse_cmds(const u8 *data, int length,
 		desc->payload = buf;
 		buf += header->payload_length;
 		length -= header->payload_length;
+	}
+
+	return 0;
+}
+
+int panel_simple_dsi_parse_pclist(struct rockchip_panel_priv *panel)
+{
+	struct rockchip_pwrctr *pwrctr = &(panel->pwrctr);
+	struct list_head *pclist_head = &(pwrctr->pclist_head);
+	struct rockchip_pwrctr_list *pclist;
+	ofnode root, child;
+	int ret;
+
+	root = dev_read_subnode(panel->dev, "power_ctr");
+	if (!ofnode_valid(root)) {
+		pwrctr->node_found = false;
+		dev_dbg(panel->dev, "failed to find power_ctr node\n");
+		return 0;
+	} else {
+		pwrctr->node_found = true;
+	}
+	pwrctr->debug = ofnode_read_u32_default(root, "rockchip,debug", -ENODATA);
+
+	INIT_LIST_HEAD(pclist_head);
+
+	ofnode_for_each_subnode(child, root) {
+		if (!ofnode_valid(child))
+			continue;
+		pclist = kmalloc(sizeof(*pclist), GFP_KERNEL);
+		if (!pclist) {
+			printk("ERR:%s out of memory\n", __func__);
+			return -ENOMEM;
+		}
+
+		strncpy(pclist->pc.name, ofnode_get_name(child), sizeof(pclist->pc.name));
+
+		ret = gpio_request_by_name_nodev(child, "gpios", 0,
+					&pclist->pc.gpio, GPIOD_IS_OUT);
+		if (ret != 0) {
+			dev_err(panel->dev, "%s request gpio\n",
+					pclist->pc.name);
+			return ret;
+		}
+
+		if (!dm_gpio_is_valid(&pclist->pc.gpio)) {
+			dev_err(panel->dev, "%s ivalid gpio\n",
+					pclist->pc.name);
+			return ret;
+		}
+
+		if (pclist->pc.gpio.flags & GPIOD_ACTIVE_LOW)
+			pclist->pc.atv_val = 0;
+		else
+			pclist->pc.atv_val = 1;
+		pclist->pc.delay = ofnode_read_u32_default(child, "rockchip,delay", -ENODATA);
+		if (pwrctr->debug > 0)
+			printk("%s: atv_val=%d, delay=%d\n", pclist->pc.name,
+				pclist->pc.atv_val, pclist->pc.delay);
+
+		list_add_tail(&pclist->list, pclist_head);
 	}
 
 	return 0;
@@ -259,6 +340,11 @@ static void panel_simple_prepare(struct rockchip_panel *panel)
 	struct rockchip_panel_plat *plat = dev_get_platdata(panel->dev);
 	struct rockchip_panel_priv *priv = dev_get_priv(panel->dev);
 	struct mipi_dsi_device *dsi = dev_get_parent_platdata(panel->dev);
+	struct rockchip_pwrctr *pwrctr = &(priv->pwrctr);
+	struct list_head *pclist_head = &(pwrctr->pclist_head);
+	struct list_head *pos;
+	struct rockchip_pwrctr_list *pclist;
+	struct pwrctr *pc;
 	int ret;
 
 	if (priv->prepared)
@@ -278,6 +364,17 @@ static void panel_simple_prepare(struct rockchip_panel *panel)
 
 	if (plat->delay.reset)
 		mdelay(plat->delay.reset);
+
+	if (priv->pwrctr.node_found && !list_empty(pclist_head)) {
+		list_for_each(pos, pclist_head) {
+			pclist = list_entry(pos, struct rockchip_pwrctr_list,
+					list);
+			pc = &pclist->pc;
+
+			dm_gpio_set_value(&pc->gpio, 1);
+			mdelay(pc->delay);
+		}
+	}
 
 	if (dm_gpio_is_valid(&priv->reset_gpio))
 		dm_gpio_set_value(&priv->reset_gpio, 0);
@@ -450,11 +547,12 @@ static int rockchip_panel_probe(struct udevice *dev)
 {
 	struct rockchip_panel_priv *priv = dev_get_priv(dev);
 	struct rockchip_panel_plat *plat = dev_get_platdata(dev);
-	struct rockchip_panel *panel =
-		(struct rockchip_panel *)dev_get_driver_data(dev);
+	struct rockchip_panel *panel;
 	int ret;
 	const char *cmd_type;
 
+	priv->dev = dev;
+	panel_simple_dsi_parse_pclist(priv);
 	ret = gpio_request_by_name(dev, "enable-gpios", 0,
 				   &priv->enable_gpio, GPIOD_IS_OUT);
 	if (ret && ret != -ENOENT) {
@@ -517,73 +615,22 @@ static int rockchip_panel_probe(struct udevice *dev)
 		dm_gpio_set_value(&priv->reset_gpio, 0);
 	}
 
+	panel = calloc(1, sizeof(*panel));
+	if (!panel)
+		return -ENOMEM;
+
+	dev->driver_data = (ulong)panel;
 	panel->dev = dev;
 	panel->bus_format = plat->bus_format;
 	panel->bpc = plat->bpc;
+	panel->funcs = &rockchip_panel_funcs;
 
 	return 0;
 }
 
-static const struct drm_display_mode auo_b125han03_mode = {
-	.clock = 146900,
-	.hdisplay = 1920,
-	.hsync_start = 1920 + 48,
-	.hsync_end = 1920 + 48 + 32,
-	.htotal = 1920 + 48 + 32 + 140,
-	.vdisplay = 1080,
-	.vsync_start = 1080 + 2,
-	.vsync_end = 1080 + 2 + 5,
-	.vtotal = 1080 + 2 + 5 + 57,
-	.vrefresh = 60,
-	.flags = DRM_MODE_FLAG_NVSYNC | DRM_MODE_FLAG_NHSYNC,
-};
-
-static const struct rockchip_panel auo_b125han03_driver_data = {
-	.funcs = &rockchip_panel_funcs,
-	.data = &auo_b125han03_mode,
-};
-
-static const struct drm_display_mode lg_lp079qx1_sp0v_mode = {
-	.clock = 200000,
-	.hdisplay = 1536,
-	.hsync_start = 1536 + 12,
-	.hsync_end = 1536 + 12 + 16,
-	.htotal = 1536 + 12 + 16 + 48,
-	.vdisplay = 2048,
-	.vsync_start = 2048 + 8,
-	.vsync_end = 2048 + 8 + 4,
-	.vtotal = 2048 + 8 + 4 + 8,
-	.vrefresh = 60,
-	.flags = DRM_MODE_FLAG_NVSYNC | DRM_MODE_FLAG_NHSYNC,
-};
-
-static const struct rockchip_panel lg_lp079qx1_sp0v_driver_data = {
-	.funcs = &rockchip_panel_funcs,
-	.data = &lg_lp079qx1_sp0v_mode,
-};
-
-static const struct rockchip_panel panel_simple_driver_data = {
-	.funcs = &rockchip_panel_funcs,
-};
-
-static const struct rockchip_panel panel_simple_dsi_driver_data = {
-	.funcs = &rockchip_panel_funcs,
-};
-
 static const struct udevice_id rockchip_panel_ids[] = {
-	{
-		.compatible = "auo,b125han03",
-		.data = (ulong)&auo_b125han03_driver_data,
-	}, {
-		.compatible = "lg,lp079qx1-sp0v",
-		.data = (ulong)&lg_lp079qx1_sp0v_driver_data,
-	}, {
-		.compatible = "simple-panel",
-		.data = (ulong)&panel_simple_driver_data,
-	}, {
-		.compatible = "simple-panel-dsi",
-		.data = (ulong)&panel_simple_dsi_driver_data,
-	},
+	{ .compatible = "simple-panel", },
+	{ .compatible = "simple-panel-dsi", },
 	{}
 };
 

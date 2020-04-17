@@ -790,6 +790,10 @@ static int fb_read_var(char *cmd, char *response,
 		fb_add_string(response, chars_left, "no", NULL);
 		break;
 	}
+	case FB_IS_USERSPACE: {
+		fb_add_string(response, chars_left, "no", NULL);
+		break;
+	}
 #ifdef CONFIG_RK_AVB_LIBAVB_USER
 	case FB_HAS_COUNT: {
 		char slot_count[2];
@@ -1062,6 +1066,7 @@ static const struct {
 	{ NAME_NO_ARGS("battery-voltage"), FB_BATT_VOLTAGE},
 	{ NAME_NO_ARGS("variant"), FB_VARIANT},
 	{ NAME_NO_ARGS("battery-soc-ok"), FB_BATT_SOC_OK},
+	{ NAME_NO_ARGS("is-userspace"), FB_IS_USERSPACE},
 #ifdef CONFIG_RK_AVB_LIBAVB_USER
 	/* Slots related */
 	{ NAME_NO_ARGS("slot-count"), FB_HAS_COUNT},
@@ -2059,7 +2064,7 @@ static void cb_oem(struct usb_ep *ep, struct usb_request *req)
 	} else if (strncmp("at-unlock-vboot", cmd + 4, 15) == 0) {
 #ifdef CONFIG_RK_AVB_LIBAVB_USER
 		uint8_t lock_state;
-		bool out_is_trusted = true;
+		char out_is_trusted = true;
 
 		if (rk_avb_read_lock_state(&lock_state))
 			fastboot_tx_write_str("FAILlock sate read failure");
